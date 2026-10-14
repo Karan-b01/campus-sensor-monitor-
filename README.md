@@ -66,7 +66,7 @@ docker compose up -d
 docker compose ps
 ```
 
-The Compose file publishes TimescaleDB on `localhost:5432` and Redis on `localhost:6379`. The database is named `campus_sensors`; its current local development credentials are configured in `docker-compose.yml`.
+The Compose file publishes TimescaleDB on `localhost:5433` and Redis on `localhost:6379`. The database is named `campus_sensors`; its current local development credentials are configured in `docker-compose.yml`. Port `5433` avoids conflicts with a PostgreSQL server already using the standard local port `5432`.
 
 Stop the services with:
 

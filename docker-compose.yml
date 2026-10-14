@@ -4,7 +4,7 @@ services:
     image: timescale/timescaledb:latest-pg16
     container_name: campus_timescaledb
     ports:
-      - "5432:5432"
+      - "5433:5432"
     environment:
       - POSTGRES_PASSWORD=supersecret
       - POSTGRES_USER=postgres
