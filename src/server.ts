@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { connectRedis, redisClient } from './config/redis.js';
 import type { SensorReading } from './types/sensor.js';
+import ruleRoutes from './api/rules.js';
 
 const app = Fastify({
   logger: true // Built-in Pino logger for extreme speed
@@ -34,11 +35,13 @@ app.post('/ingest', async (request, reply) => {
     reply.code(500).send({ error: 'Failed to queue readings' });
   }
 });
-
 const start = async () => {
   try {
     await connectRedis();
-    // Listen on port 3000
+    
+    // Register the rule routes
+    await app.register(ruleRoutes);
+
     await app.listen({ port: 3000, host: '0.0.0.0' });
     console.log('🚀 Server listening at http://localhost:3000');
   } catch (err) {

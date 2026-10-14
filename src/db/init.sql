@@ -12,3 +12,14 @@ SELECT create_hypertable('sensor_readings', 'time', if_not_exists => TRUE);
 
 CREATE INDEX IF NOT EXISTS sensor_readings_sensor_time_idx
   ON sensor_readings (sensor_id, time DESC);
+
+CREATE TABLE IF NOT EXISTS alert_rules (
+  id             BIGSERIAL PRIMARY KEY,
+  name           TEXT NOT NULL,
+  sensor_type    TEXT NOT NULL,
+  operator       TEXT NOT NULL CHECK (operator IN ('>', '>=', '<', '<=', '=', '!=')),
+  threshold      DOUBLE PRECISION NOT NULL,
+  window_minutes INTEGER NOT NULL DEFAULT 0 CHECK (window_minutes >= 0),
+  enabled        BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
