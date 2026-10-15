@@ -8,6 +8,7 @@
     "worker": "tsx src/services/worker.ts",
     "simulator": "tsx src/simulator.ts",
     "migrate": "tsx src/db/migrate.ts",
+    "test": "tsx --test src/lib/readings.test.ts src/domain/alert-rules.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [],

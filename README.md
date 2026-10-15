@@ -5,11 +5,27 @@ A TypeScript backend for ingesting campus sensor readings, buffering bursts in R
 ## Features
 
 - Accept a sensor reading or a batch of readings at `POST /ingest`.
+- Validate required reading fields, timestamps, finite values, and a maximum batch of 10,000.
 - Queue readings in Redis Streams and return `202 Accepted` after Redis accepts the batch.
 - Persist readings in a TimescaleDB hypertable using bulk inserts.
 - Evaluate single-reading and rolling-window alert rules in a background worker.
+- Create, edit, enable, and disable alert rules through the API.
 - List, acknowledge, and resolve alerts through the API.
 - Generate a 10,000-reading burst with the TypeScript simulator.
+
+## Project structure
+
+```text
+src/
+  api/          Fastify rule and alert routes
+  config/       Redis and PostgreSQL clients
+  db/           SQL schema and migration runner
+  domain/       Alert-rule operators and evaluation
+  lib/          Reading validation and batch parsing
+  services/     Redis stream worker
+  types/        Shared TypeScript data types
+  simulator.ts  Local 10,000-reading load simulator
+```
 
 ## Requirements
 
@@ -76,6 +92,7 @@ The simulator sends one JSON batch containing 10,000 readings to `/ingest`. It p
 | `POST` | `/ingest` | Queue one reading or an array of readings |
 | `GET` | `/rules` | List alert rules |
 | `POST` | `/rules` | Create an alert rule |
+| `PATCH` | `/rules/:id` | Edit an alert rule |
 | `PATCH` | `/rules/:id/toggle` | Enable or disable a rule with `{ "enabled": true }` |
 | `GET` | `/alerts` | List alerts with their rule details |
 | `PATCH` | `/alerts/:id/acknowledge` | Acknowledge an open alert |
@@ -109,7 +126,7 @@ Invoke-RestMethod -Uri "http://localhost:3000/ingest" -Method Post -ContentType 
 
 ## Load-test report
 
-The TypeScript simulator sends a single batch of 10,000 readings. In one local run, the API returned `202 Accepted` with `count: 10000` in **124.80 ms**. This measures API acceptance and queuing time, not end-to-end worker completion time.
+The TypeScript simulator sends a single batch of 10,000 readings. In the latest local run, the API returned `202 Accepted` with `count: 10000` in **131.21 ms**. This measures API acceptance and queuing time, not end-to-end worker completion time.
 
 After a follow-up run with unique millisecond timestamps, the Redis stream drained to zero and the database contained 10,000 additional unique readings. The worker generated matching alerts for readings that met the enabled rules. This was a local development run; hardware details and repeated benchmark statistics were not recorded, so the result is an observation rather than a performance guarantee.
 
@@ -117,17 +134,18 @@ Run the TypeScript check with:
 
 ```bash
 npm run typecheck
+npm test
 ```
 
-There is no automated unit-test suite or k6 scenario configured yet.
+The tests cover reading validation and all supported threshold operators. There is no k6 scenario configured yet.
 
 ## Architecture and trade-offs
 
 ### Fastify API and Redis Streams
 
-The API adds each submitted reading to the `sensor_stream` Redis stream in a Redis `MULTI`/`EXEC` batch, then responds with `202`. This keeps database writes off the request path and allows the API to accept a burst before the worker catches up.
+The API validates each submitted reading and adds the accepted readings to the `sensor_stream` Redis stream in a Redis `MULTI`/`EXEC` batch, then responds with `202`. Requests may contain up to 10,000 readings and the JSON body limit is 5 MiB. This keeps database writes off the request path and allows the API to accept a burst before the worker catches up.
 
-The trade-off is eventual consistency: queued readings are not immediately queryable in TimescaleDB. The current Compose file does not configure Redis replication or an explicit persistence volume, so this setup does not promise that queued data will survive every Redis or host failure. The ingestion route also relies on the submitted reading shape rather than performing full schema validation.
+The trade-off is eventual consistency: queued readings are not immediately queryable in TimescaleDB. The current Compose file does not configure Redis replication or an explicit persistence volume, so this setup does not promise that queued data will survive every Redis or host failure.
 
 ### TimescaleDB persistence
 

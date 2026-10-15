@@ -1,9 +1,4 @@
-interface SensorReading {
-  sensorId: string;
-  type: string;
-  value: number;
-  timestamp: string;
-}
+import type { SensorReading } from './types/sensor.js';
 
 const API_URL = 'http://localhost:3000/ingest';
 const SENSORS = ['library-floor-1', 'library-floor-2', 'cafeteria-main', 'cs-lab-401', 'dorm-building-a'];
