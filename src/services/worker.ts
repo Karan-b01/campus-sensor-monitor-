@@ -1,20 +1,29 @@
 import { redisClient, connectRedis } from '../config/redis.js';
 import { databasePool } from '../config/database.js';
 import type { SensorReading } from '../types/sensor.js';
+import { matchesThreshold, type RuleOperator } from '../domain/alert-rules.js';
 
 const STREAM_KEY = 'sensor_stream';
 const BATCH_SIZE = 1000;
 
-// Helper to evaluate conditions
-function checkThreshold(val: number, operator: string, threshold: number): boolean {
-  switch (operator) {
-    case '>': return val > threshold;
-    case '<': return val < threshold;
-    case '>=': return val >= threshold;
-    case '<=': return val <= threshold;
-    case '=': return val === threshold;
-    default: return false;
-  }
+interface AlertRuleRow {
+  id: string;
+  sensor_type: string;
+  operator: RuleOperator;
+  threshold: number;
+  window_minutes: number;
+}
+
+interface WindowAggregateRow {
+  sensor_id: string;
+  avg_val: string | number | null;
+}
+
+interface PendingAlert {
+  ruleId: string;
+  sensorId: string;
+  value: number;
+  message: string;
 }
 
 async function processBatch() {
@@ -67,19 +76,26 @@ async function processBatch() {
     await databasePool.query(insertQuery, values);
 
     // 3. Fetch Active Rules
-    const rulesRes = await databasePool.query('SELECT * FROM alert_rules WHERE enabled = true');
+    const rulesRes = await databasePool.query<AlertRuleRow>(
+      'SELECT id, sensor_type, operator, threshold, window_minutes FROM alert_rules WHERE enabled = true'
+    );
     const rules = rulesRes.rows;
     const singleRules = rules.filter((r: { window_minutes: number }) => r.window_minutes === 0);
     const windowRules = rules.filter((r: { window_minutes: number }) => r.window_minutes > 0);
 
-    const alertInserts: any[] = [];
+    const alertInserts: PendingAlert[] = [];
 
     // 4. Evaluate Single-Reading Rules (In-Memory)
     for (const reading of parsedReadings) {
       const val = reading.value;
       for (const rule of singleRules) {
-        if (rule.sensor_type === reading.type && checkThreshold(val, rule.operator, rule.threshold)) {
-          alertInserts.push([rule.id, reading.sensorId, val, `Single reading ${val} ${rule.operator} ${rule.threshold}`]);
+        if (rule.sensor_type === reading.type && matchesThreshold(val, rule.operator, rule.threshold)) {
+          alertInserts.push({
+            ruleId: rule.id,
+            sensorId: reading.sensorId,
+            value: val,
+            message: `Single reading ${val} ${rule.operator} ${rule.threshold}`
+          });
         }
       }
     }
@@ -90,26 +106,32 @@ async function processBatch() {
       const windowQuery = `
         SELECT sensor_id, AVG(value) as avg_val
         FROM sensor_readings
-        WHERE metric_type = $1 AND time >= NOW() - INTERVAL '${rule.window_minutes} minutes'
+        WHERE metric_type = $1 AND time >= NOW() - ($2::integer * INTERVAL '1 minute')
         GROUP BY sensor_id
       `;
-      const windowRes = await databasePool.query(windowQuery, [rule.sensor_type]);
+      const windowRes = await databasePool.query<WindowAggregateRow>(windowQuery, [rule.sensor_type, rule.window_minutes]);
       for (const row of windowRes.rows) {
-        const avgVal = parseFloat(row.avg_val);
-        if (checkThreshold(avgVal, rule.operator, rule.threshold)) {
-          alertInserts.push([rule.id, row.sensor_id, avgVal, `Rolling average ${avgVal.toFixed(2)} ${rule.operator} ${rule.threshold} over ${rule.window_minutes}m`]);
+        if (row.avg_val === null) continue;
+        const avgVal = Number.parseFloat(String(row.avg_val));
+        if (matchesThreshold(avgVal, rule.operator, rule.threshold)) {
+          alertInserts.push({
+            ruleId: rule.id,
+            sensorId: row.sensor_id,
+            value: avgVal,
+            message: `Rolling average ${avgVal.toFixed(2)} ${rule.operator} ${rule.threshold} over ${rule.window_minutes}m`
+          });
         }
       }
     }
 
     // 6. Bulk Insert Alerts (if any were triggered)
     if (alertInserts.length > 0) {
-      const alertValues: any[] = [];
+      const alertValues: (string | number)[] = [];
       const alertPlaceholders: string[] = [];
       let alertParam = 1;
 
       alertInserts.forEach(alert => {
-        alertValues.push(alert[0], alert[1], alert[2], alert[3]);
+        alertValues.push(alert.ruleId, alert.sensorId, alert.value, alert.message);
         alertPlaceholders.push(`($${alertParam++}, $${alertParam++}, $${alertParam++}, $${alertParam++})`);
       });
 
