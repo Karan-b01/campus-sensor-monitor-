@@ -23,3 +23,19 @@ CREATE TABLE IF NOT EXISTS alert_rules (
   enabled        BOOLEAN NOT NULL DEFAULT TRUE,
   created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS alerts (
+  id               BIGSERIAL PRIMARY KEY,
+  rule_id          BIGINT NOT NULL REFERENCES alert_rules(id),
+  sensor_id        TEXT NOT NULL,
+  current_value    DOUBLE PRECISION NOT NULL,
+  message          TEXT NOT NULL,
+  triggered_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  status           TEXT NOT NULL DEFAULT 'OPEN'
+                   CHECK (status IN ('OPEN', 'ACKNOWLEDGED', 'RESOLVED')),
+  acknowledged_at  TIMESTAMPTZ,
+  resolved_at      TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS alerts_triggered_at_idx
+  ON alerts (triggered_at DESC);
