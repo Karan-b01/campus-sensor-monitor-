@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import alertRoutes from './api/alerts.js';
 import { connectRedis, redisClient } from './config/redis.js';
 import type { SensorReading } from './types/sensor.js';
 import ruleRoutes from './api/rules.js';
@@ -41,6 +42,7 @@ const start = async () => {
     
     // Register the rule routes
     await app.register(ruleRoutes);
+    await app.register(alertRoutes);
 
     await app.listen({ port: 3000, host: '0.0.0.0' });
     console.log('🚀 Server listening at http://localhost:3000');
@@ -49,5 +51,6 @@ const start = async () => {
     process.exit(1);
   }
 };
+
 
 start();
