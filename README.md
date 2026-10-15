@@ -1,17 +1,85 @@
-# Campus Sensor Monitoring and Alerts
+# Campus Sensor Monitoring and Alert System
 
-A backend service for collecting campus sensor readings, evaluating alert rules, and helping organizers manage alerts. The system is being built to handle bursty sensor traffic and time-window rules such as average temperature over the previous ten minutes.
+A TypeScript backend for ingesting campus sensor readings, buffering bursts in Redis Streams, storing time-series data in TimescaleDB, and evaluating alert rules asynchronously.
 
-> **Project status:** early development. The repository currently contains the Docker Compose definition and a TypeScript project scaffold. The API, stream processing, persistence, rule evaluation, simulator, and load tests are planned work and are not implemented yet.
+## Features
 
-## Project goals
+- Accept a sensor reading or a batch of readings at `POST /ingest`.
+- Queue readings in Redis Streams and return `202 Accepted` after Redis accepts the batch.
+- Persist readings in a TimescaleDB hypertable using bulk inserts.
+- Evaluate single-reading and rolling-window alert rules in a background worker.
+- List, acknowledge, and resolve alerts through the API.
+- Generate a 10,000-reading burst with the TypeScript simulator.
 
-- Accept individual sensor readings and batches.
-- Absorb bursts of up to 10,000 readings per second without overwhelming the storage layer.
-- Let organizers create, edit, enable, and disable alert rules.
-- Evaluate rules against individual readings and rolling time windows.
-- Create alerts when a rule matches, and let organizers view, acknowledge, and resolve them.
-- Provide a sensor simulator and a reproducible load-test report.
+## Requirements
+
+- Node.js 20 or later (required by Fastify 5).
+- Docker Desktop with Docker Compose.
+- npm.
+
+## Install and run
+
+### 1. Start Redis and TimescaleDB
+
+From the project root:
+
+```bash
+docker compose up -d
+docker compose ps
+```
+
+Redis is published on `localhost:6379`. TimescaleDB is published on `localhost:5433` and creates the `campus_sensors` database.
+
+### 2. Install dependencies and create the database schema
+
+```bash
+npm install
+npm run migrate
+```
+
+The migration creates the sensor readings hypertable, alert rules table, and alerts table. It is safe to run again.
+
+### 3. Start the API and worker
+
+Open separate terminals in the project root.
+
+**Terminal 1 — API:**
+
+```bash
+npm run dev
+```
+
+The API listens on `http://localhost:3000`.
+
+**Terminal 2 — worker:**
+
+```bash
+npm run worker
+```
+
+Run one worker instance with the current Redis stream polling implementation.
+
+### 4. Run the simulator (optional)
+
+With the API and worker running, open a third terminal:
+
+```bash
+npm run simulator
+```
+
+The simulator sends one JSON batch containing 10,000 readings to `/ingest`. It prints the HTTP status, queued count, and time until the API response. Running it again sends another batch and creates more database rows and alerts.
+
+## API
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/ingest` | Queue one reading or an array of readings |
+| `GET` | `/rules` | List alert rules |
+| `POST` | `/rules` | Create an alert rule |
+| `PATCH` | `/rules/:id/toggle` | Enable or disable a rule with `{ "enabled": true }` |
+| `GET` | `/alerts` | List alerts with their rule details |
+| `PATCH` | `/alerts/:id/acknowledge` | Acknowledge an open alert |
+| `PATCH` | `/alerts/:id/resolve` | Resolve an alert |
 
 Example reading:
 
@@ -24,110 +92,67 @@ Example reading:
 }
 ```
 
-## Planned technology
+For example, with PowerShell:
 
-| Component | Technology | Purpose |
-| --- | --- | --- |
-| API | Fastify + TypeScript | Typed HTTP ingestion and organizer endpoints |
-| Burst buffer | Redis Streams | Queue readings during traffic spikes for asynchronous processing |
-| Storage and analytics | TimescaleDB | Persist time-series readings and support rolling-window queries |
-| Load testing | k6 | Exercise burst traffic and produce performance results for the submission report |
-| Sensor simulator | Python `asyncio` + `httpx` | Generate realistic campus readings and temperature trends |
+```powershell
+$reading = @{
+  sensorId = "library-floor-2"
+  type = "temperature"
+  value = 34.5
+  timestamp = (Get-Date).ToUniversalTime().ToString("o")
+} | ConvertTo-Json
 
-## Current repository
-
-```text
-.
-├── docker-compose.yml       # Local TimescaleDB and Redis services
-├── src/
-│   ├── server.ts            # API entry point (planned)
-│   └── config/
-│       ├── database.ts      # Database connection (planned)
-│       └── redis.ts         # Redis connection (planned)
-├── package.json             # Node dependencies
-└── tsconfig.json             # TypeScript compiler settings
+Invoke-RestMethod -Uri "http://localhost:3000/ingest" -Method Post -ContentType "application/json" -Body $reading
 ```
 
-## Getting started
+`202 Accepted` means the reading is queued; it does not mean database persistence or alert evaluation has completed. Check the worker terminal and query `GET /alerts` to inspect generated alerts.
 
-### Prerequisites
+## Load-test report
 
-- Docker Desktop with Docker Compose
-- Node.js and npm
-- Python 3 for the planned simulator
-- k6 for the planned load tests
+The TypeScript simulator sends a single batch of 10,000 readings. In one local run, the API returned `202 Accepted` with `count: 10000` in **124.80 ms**. This measures API acceptance and queuing time, not end-to-end worker completion time.
 
-### Start the local data services
+After a follow-up run with unique millisecond timestamps, the Redis stream drained to zero and the database contained 10,000 additional unique readings. The worker generated matching alerts for readings that met the enabled rules. This was a local development run; hardware details and repeated benchmark statistics were not recorded, so the result is an observation rather than a performance guarantee.
 
-From the repository root:
+Run the TypeScript check with:
 
-```sh
-docker compose up -d
-docker compose ps
+```bash
+npm run typecheck
 ```
 
-The Compose file publishes TimescaleDB on `localhost:5433` and Redis on `localhost:6379`. The database is named `campus_sensors`; its current local development credentials are configured in `docker-compose.yml`. Port `5433` avoids conflicts with a PostgreSQL server already using the standard local port `5432`.
+There is no automated unit-test suite or k6 scenario configured yet.
 
-Stop the services with:
+## Architecture and trade-offs
 
-```sh
+### Fastify API and Redis Streams
+
+The API adds each submitted reading to the `sensor_stream` Redis stream in a Redis `MULTI`/`EXEC` batch, then responds with `202`. This keeps database writes off the request path and allows the API to accept a burst before the worker catches up.
+
+The trade-off is eventual consistency: queued readings are not immediately queryable in TimescaleDB. The current Compose file does not configure Redis replication or an explicit persistence volume, so this setup does not promise that queued data will survive every Redis or host failure. The ingestion route also relies on the submitted reading shape rather than performing full schema validation.
+
+### TimescaleDB persistence
+
+`sensor_readings` is a hypertable partitioned by time. The worker uses the `pg` driver to insert each batch in one SQL statement, with a maximum batch size of 1,000. The primary key `(time, sensor_id, metric_type)` prevents duplicate readings at the same timestamp; conflicting inserts are ignored so the worker can safely retry persistence.
+
+Rolling-window rules use SQL aggregation over readings in the requested time range. This keeps aggregation in the database, though query cost depends on data volume and the number of active window rules.
+
+### Background worker
+
+The worker polls up to 1,000 stream entries at a time, validates their fields, writes readings, evaluates enabled rules, stores any generated alerts, and removes successfully processed entries. Keeping this work out of the HTTP request helps avoid tying API response time to database insert and rule-evaluation time.
+
+The current worker uses stream range reads and deletes rather than Redis consumer groups. Run a single worker instance; multiple workers would need coordination to avoid processing the same entries concurrently. The worker is also a single serial consumer, so its processing capacity limits how quickly the queue drains.
+
+## Local configuration
+
+Database connection settings can be supplied with `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME`. The default credentials in `docker-compose.yml` are for local development only; do not use them in a deployed environment.
+
+Stop the local data services with:
+
+```bash
 docker compose down
 ```
 
-To remove the persisted local database volume as well:
+To also delete the persisted TimescaleDB volume and all local database data:
 
-```sh
+```bash
 docker compose down -v
 ```
-
-### API and tooling
-
-The API and supporting scripts are not implemented yet, so there is currently no start, simulator, or load-test command. The Node dependencies can be installed with:
-
-```sh
-npm install
-```
-
-## Architecture plan
-
-1. Fastify validates incoming readings and batches, then appends accepted events to a Redis Stream.
-2. A worker consumes stream entries, persists readings in TimescaleDB, and evaluates configured rules.
-3. Matching rules create alerts that organizers can query and manage through the API.
-4. The Python simulator generates repeatable campus sensor patterns; k6 measures ingestion throughput, latency, and error rate under burst load.
-
-Redis buffering is intended to smooth short-lived bursts. It does not by itself guarantee that every offered request can be accepted indefinitely: stream retention, consumer capacity, backpressure, and failure recovery will need explicit limits and monitoring.
-
-## Planned API surface
-
-The endpoint names and request schemas below are design targets and may change during implementation.
-
-| Area | Planned operations |
-| --- | --- |
-| Readings | Submit a reading or batch; query readings by sensor, type, and time range |
-| Rules | Create, list, update, enable, and disable alert rules |
-| Alerts | List, acknowledge, and resolve generated alerts |
-| Health | Report API, Redis, and database readiness |
-
-## Performance reporting
-
-The submission target is a repeatable burst test of 10,000 readings in one second. The final report should include the test environment, offered and accepted throughput, latency percentiles, errors or dropped readings, and the behavior of the stream and database after the burst. No benchmark results are claimed yet; they will be added after the load test is implemented and run.
-
-## Development status
-
-- [x] Local Redis and TimescaleDB services defined with Docker Compose
-- [ ] Fastify server and health endpoint
-- [ ] Reading ingestion and batch validation
-- [ ] Redis Stream producer and consumer worker
-- [ ] TimescaleDB schema and migrations
-- [ ] Rule management and rolling-window evaluation
-- [ ] Alert lifecycle endpoints
-- [ ] Python sensor simulator
-- [ ] k6 burst scenario and performance report
-
-## Configuration and security
-
-The current Compose file uses development-only database credentials. Before sharing or deploying this project, move credentials into environment variables and rotate any credentials that have been exposed. Do not use the current values in a production environment.
-
-## License
-
-No license has been selected yet.

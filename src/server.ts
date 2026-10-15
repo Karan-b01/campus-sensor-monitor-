@@ -5,7 +5,8 @@ import type { SensorReading } from './types/sensor.js';
 import ruleRoutes from './api/rules.js';
 
 const app = Fastify({
-  logger: true // Built-in Pino logger for extreme speed
+  logger: true, // Built-in Pino logger for extreme speed
+  bodyLimit: 5 * 1024 * 1024
 });
 
 // The ingestion endpoint for single readings and batches

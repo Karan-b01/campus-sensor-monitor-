@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "worker": "tsx src/services/worker.ts",
+    "simulator": "tsx src/simulator.ts",
     "migrate": "tsx src/db/migrate.ts",
     "typecheck": "tsc --noEmit"
   },
