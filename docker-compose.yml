@@ -10,8 +10,12 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_DB=campus_sensors
     volumes:
-      # This named volume ensures your data persists even if you destroy the container
       - timescaledb_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d campus_sensors"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     restart: unless-stopped
 
   redis:
@@ -19,7 +23,16 @@ services:
     container_name: campus_redis
     ports:
       - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     restart: unless-stopped
 
 volumes:
   timescaledb_data:
+  redis_data:

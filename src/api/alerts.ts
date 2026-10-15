@@ -2,8 +2,9 @@ import { type FastifyInstance } from 'fastify';
 import { databasePool } from '../config/database.js';
 
 export default async function alertRoutes(app: FastifyInstance) {
+  const validId = (id: string): boolean => /^[1-9]\d*$/.test(id);
 
-  // 1. View all active alerts
+  // List alerts, including their current status.
   app.get('/alerts', async (request, reply) => {
     try {
       const result = await databasePool.query(`
@@ -14,13 +15,15 @@ export default async function alertRoutes(app: FastifyInstance) {
       `);
       reply.send(result.rows);
     } catch (error) {
+      request.log.error(error);
       reply.code(500).send({ error: 'Failed to fetch alerts' });
     }
   });
 
   // 2. Acknowledge an alert
-  app.patch('/alerts/:id/acknowledge', async (request, reply) => {
-    const { id } = request.params as { id: string };
+  app.patch<{ Params: { id: string } }>('/alerts/:id/acknowledge', async (request, reply) => {
+    const { id } = request.params;
+    if (!validId(id)) return reply.code(400).send({ error: 'Invalid alert ID' });
     try {
       const result = await databasePool.query(
         `UPDATE alerts SET status = 'ACKNOWLEDGED', acknowledged_at = NOW() 
@@ -30,22 +33,26 @@ export default async function alertRoutes(app: FastifyInstance) {
       if (result.rowCount === 0) return reply.code(404).send({ error: 'Alert not found or already acknowledged' });
       reply.send(result.rows[0]);
     } catch (error) {
+      request.log.error(error);
       reply.code(500).send({ error: 'Failed to acknowledge alert' });
     }
   });
 
   // 3. Resolve an alert
-  app.patch('/alerts/:id/resolve', async (request, reply) => {
-    const { id } = request.params as { id: string };
+  app.patch<{ Params: { id: string } }>('/alerts/:id/resolve', async (request, reply) => {
+    const { id } = request.params;
+    if (!validId(id)) return reply.code(400).send({ error: 'Invalid alert ID' });
     try {
       const result = await databasePool.query(
-        `UPDATE alerts SET status = 'RESOLVED', resolved_at = NOW() 
-         WHERE id = $1 RETURNING *`,
+        `UPDATE alerts
+         SET status = 'RESOLVED', resolved_at = NOW(), dedupe_key = NULL
+         WHERE id = $1 AND status <> 'RESOLVED' RETURNING *`,
         [id]
       );
       if (result.rowCount === 0) return reply.code(404).send({ error: 'Alert not found' });
       reply.send(result.rows[0]);
     } catch (error) {
+      request.log.error(error);
       reply.code(500).send({ error: 'Failed to resolve alert' });
     }
   });

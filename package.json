@@ -1,8 +1,7 @@
 {
-  "name": "gdg",
+  "name": "campus-sensor-monitoring-api",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Event-driven campus sensor ingestion, time-series persistence, and alerting backend",
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "worker": "tsx src/services/worker.ts",
@@ -11,9 +10,12 @@
     "test": "tsx --test src/lib/readings.test.ts src/domain/alert-rules.test.ts",
     "typecheck": "tsc --noEmit"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "sensors",
+    "fastify",
+    "redis",
+    "timescaledb"
+  ],
   "type": "module",
   "dependencies": {
     "fastify": "^5.12.7",
@@ -25,5 +27,9 @@
     "@types/pg": "^8.23.1",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=20"
   }
 }

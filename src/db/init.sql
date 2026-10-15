@@ -37,5 +37,13 @@ CREATE TABLE IF NOT EXISTS alerts (
   resolved_at      TIMESTAMPTZ
 );
 
+-- One unresolved alert per rule and sensor. Clearing this key on resolution
+-- allows a later recurrence to create a fresh alert.
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS dedupe_key TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS alerts_dedupe_key_idx
+  ON alerts (dedupe_key)
+  WHERE dedupe_key IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS alerts_triggered_at_idx
   ON alerts (triggered_at DESC);

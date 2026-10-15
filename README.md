@@ -8,7 +8,9 @@ A TypeScript backend for ingesting campus sensor readings, buffering bursts in R
 - Validate required reading fields, timestamps, finite values, and a maximum batch of 10,000.
 - Queue readings in Redis Streams and return `202 Accepted` after Redis accepts the batch.
 - Persist readings in a TimescaleDB hypertable using bulk inserts.
+- Process each batch in a database transaction and safely retry stream entries.
 - Evaluate single-reading and rolling-window alert rules in a background worker.
+- Keep at most one unresolved alert for each rule and sensor; resolving it allows a later recurrence to alert again.
 - Create, edit, enable, and disable alert rules through the API.
 - List, acknowledge, and resolve alerts through the API.
 - Generate a 10,000-reading burst with the TypeScript simulator.
@@ -44,7 +46,7 @@ docker compose up -d
 docker compose ps
 ```
 
-Redis is published on `localhost:6379`. TimescaleDB is published on `localhost:5433` and creates the `campus_sensors` database.
+Redis is published on `localhost:6379` with AOF persistence on a named volume. TimescaleDB is published on `localhost:5433` and creates the `campus_sensors` database. Both services have health checks.
 
 ### 2. Install dependencies and create the database schema
 
@@ -145,7 +147,7 @@ The tests cover reading validation and all supported threshold operators. There 
 
 The API validates each submitted reading and adds the accepted readings to the `sensor_stream` Redis stream in a Redis `MULTI`/`EXEC` batch, then responds with `202`. Requests may contain up to 10,000 readings and the JSON body limit is 5 MiB. This keeps database writes off the request path and allows the API to accept a burst before the worker catches up.
 
-The trade-off is eventual consistency: queued readings are not immediately queryable in TimescaleDB. The current Compose file does not configure Redis replication or an explicit persistence volume, so this setup does not promise that queued data will survive every Redis or host failure.
+The trade-off is eventual consistency: queued readings are not immediately queryable in TimescaleDB. Redis AOF persistence reduces queue loss on a container restart, but it is not replication or a backup and an `everysec` fsync policy can still lose a small amount of recent data during a host failure.
 
 ### TimescaleDB persistence
 
@@ -155,13 +157,17 @@ Rolling-window rules use SQL aggregation over readings in the requested time ran
 
 ### Background worker
 
-The worker polls up to 1,000 stream entries at a time, validates their fields, writes readings, evaluates enabled rules, stores any generated alerts, and removes successfully processed entries. Keeping this work out of the HTTP request helps avoid tying API response time to database insert and rule-evaluation time.
+The worker polls up to 1,000 stream entries at a time, validates their fields, and writes readings and generated alerts in one database transaction. It removes stream entries only after that transaction commits. If removal fails, a retry encounters the reading primary key and does not evaluate it again, preventing duplicate single-reading alerts. A unique alert deduplication key prevents repeated unresolved alerts for the same rule and sensor; resolving an alert clears that key so a later recurrence can create a new alert.
+
+Window rules are evaluated only for sensors that had new readings in the committed batch. This avoids repeatedly scanning every sensor and emitting the same alert for unrelated batches.
+
+When a batch fails, the worker keeps its valid stream entries for retry and uses capped exponential backoff to avoid flooding logs or the database during an outage. Malformed stream entries are logged and discarded because they cannot be persisted.
 
 The current worker uses stream range reads and deletes rather than Redis consumer groups. Run a single worker instance; multiple workers would need coordination to avoid processing the same entries concurrently. The worker is also a single serial consumer, so its processing capacity limits how quickly the queue drains.
 
 ## Local configuration
 
-Database connection settings can be supplied with `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME`. The default credentials in `docker-compose.yml` are for local development only; do not use them in a deployed environment.
+Database connection settings can be supplied with `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME`. Set `REDIS_URL` to change the Redis connection string. The default credentials in `docker-compose.yml` are for local development only; do not use them in a deployed environment.
 
 Stop the local data services with:
 
@@ -169,7 +175,7 @@ Stop the local data services with:
 docker compose down
 ```
 
-To also delete the persisted TimescaleDB volume and all local database data:
+To also delete the persisted TimescaleDB data and Redis queue:
 
 ```bash
 docker compose down -v
